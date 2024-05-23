@@ -18,15 +18,7 @@ flags.DEFINE_float('conf', 0.50, 'confidence threshold')
 flags.DEFINE_integer('blur_id', None, 'class ID to apply Gaussian Blur')
 flags.DEFINE_integer('class_id', None, 'class ID to track')
 
-
-FRAME_WIDTH=30
-FRAME_HEIGHT=100
-
-
-SOURCE_POLYGONE = np.array([[18, 550], [1852, 608],[1335, 370], [534, 343]], dtype=np.float32)
-BIRD_EYE_VIEW = np.array([[0, 0], [FRAME_WIDTH, 0], [FRAME_WIDTH, FRAME_HEIGHT],[0, FRAME_HEIGHT]], dtype=np.float32)
-
-M = cv2.getPerspectiveTransform(SOURCE_POLYGONE, BIRD_EYE_VIEW)
+flags.DEFINE_boolean('click', False, 'Use mouse')
 
 
 def draw_corner_rect(img, bbox, line_length=30, line_thickness=5, rect_thickness=1,
@@ -70,12 +62,67 @@ def read_frames(cap):
             break
         yield frame 
 
+def get_clicked_points(frame, num_points=4):
+    img = frame.copy()
+    cv2.namedWindow("image")
+    cv2.imshow("image", img)
 
+    clicked_points = []
+    keep_looping = True
+
+    def mouse_callback(event, x, y, flags, param):
+        nonlocal clicked_points, keep_looping, img
+
+        if event == cv2.EVENT_LBUTTONDOWN:
+            if len(clicked_points) == num_points:
+                clicked_points = []  # Reset if already captured 4 points
+            clicked_points.append([x, y])
+            cv2.circle(img, (x, y), 10, (0, 0, 255), -1)
+            cv2.imshow("image", img)         
+
+            if len(clicked_points) == num_points:
+                keep_looping = False
+
+    cv2.setMouseCallback("image", mouse_callback)
+
+    while keep_looping:
+        cv2.waitKey(1)
+
+    cv2.destroyAllWindows()
+
+    return clicked_points, img if len(clicked_points) == num_points else None
+
+
+def get_height_width_input(frame):
+    img = frame.copy()
+
+    while True:
+        height = input("Enter the height: ")
+        width = input("Enter the width: ")
+
+        try:
+            height = int(height)
+            width = int(width)
+            break
+        except ValueError:
+            print("Invalid input. Please enter integers for height and width.")
+
+
+    return height, width
 
 
 
 
 def main(_argv):
+    FRAME_WIDTH=30
+    FRAME_HEIGHT=100
+
+    SOURCE_POLYGONE = np.array([[18, 550], [1852, 608],[1335, 370], [534, 343]], dtype=np.float32)
+    BIRD_EYE_VIEW = np.array([[0, 0], [FRAME_WIDTH, 0], [FRAME_WIDTH, FRAME_HEIGHT],[0, FRAME_HEIGHT]], dtype=np.float32)
+
+    M = cv2.getPerspectiveTransform(SOURCE_POLYGONE, BIRD_EYE_VIEW)
+
+
     # Initialize the video capture
     video_input = FLAGS.video
 
@@ -90,6 +137,21 @@ def main(_argv):
     frame_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     fps = int(cap.get(cv2.CAP_PROP_FPS))
 
+
+    if FLAGS.click:
+
+        
+        frame = next(frame_generator)
+        selected_points=[]
+        selected_points, img = get_clicked_points(frame)
+ 
+        SOURCE_POLYGONE=np.array([], dtype=np.float32)
+
+        SOURCE_POLYGONE=np.array([selected_points], dtype=np.float32)
+        x, y= get_height_width_input(img)
+        FRAME_HEIGHT,FRAME_WIDTH=x, y
+        BIRD_EYE_VIEW = np.array([[0, 0], [FRAME_WIDTH, 0], [FRAME_WIDTH, FRAME_HEIGHT],[0, FRAME_HEIGHT]], dtype=np.float32)
+        M = cv2.getPerspectiveTransform(SOURCE_POLYGONE, BIRD_EYE_VIEW)
 
     pts = SOURCE_POLYGONE.astype(np.int32) 
     pts = pts.reshape((-1, 1, 2))
@@ -186,14 +248,12 @@ def main(_argv):
 
 
 
-
             prev_positions[track_id] = transformed_pt[0][0]
             # Draw bounding box and text
             frame = draw_corner_rect(frame, (x1, y1, x2 - x1, y2 - y1), line_length=15, line_thickness=3, rect_thickness=1, rect_color=(B, G, R), line_color=(R, G, B))
             #cv2.rectangle(frame, (x1, y1), (x2, y2), (B, G, R), 2)
             cv2.rectangle(frame, (x1 - 1, y1 - 20), (x1 + len(text) * 10, y1), (B, G, R), -1)
             cv2.putText(frame, text, (x1 + 5, y1 - 7), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 2)
-            cv2.polylines(frame, [pts], isClosed=True, color=(255, 0, 0), thickness=2)
             if track_id in speed_accumulator :
                 avg_speed = sum(speed_accumulator[track_id]) / len(speed_accumulator[track_id])
                 #print(avg_speed)
@@ -201,10 +261,15 @@ def main(_argv):
                 cv2.putText(frame, f"Speed: {avg_speed:.0f} km/h", (x1, y1 - 25), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 2)
 
             # Apply Gaussian Blur
+
             if FLAGS.blur_id is not None and class_id == FLAGS.blur_id:
+                print("true")
                 if 0 <= x1 < x2 <= frame.shape[1] and 0 <= y1 < y2 <= frame.shape[0]:
                     frame[y1:y2, x1:x2] = cv2.GaussianBlur(frame[y1:y2, x1:x2], (99, 99), 3)
 
+        cv2.polylines(frame, [pts], isClosed=True, color=(255, 0, 0), thickness=2)
+        cv2.putText(frame, f"Height: {FRAME_HEIGHT}", (1500, 900), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 255, 0), 2)
+        cv2.putText(frame, f"Width: {FRAME_WIDTH}", (1530, 930), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 255, 0), 2)
         cv2.imshow('speed_estimation', frame)
         writer.write(frame)
         frame_count += 1
