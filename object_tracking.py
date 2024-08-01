@@ -1,8 +1,7 @@
 import cv2
 import torch
 import numpy as np
-from absl import app, flags
-from absl.flags import FLAGS
+import argparse, os
 from deep_sort_realtime.deepsort_tracker import DeepSort
 import time
 
@@ -11,14 +10,51 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent / "yolov9"))
 from yolov9.models.common import DetectMultiBackend, AutoShape
 
-# Define command line flags
-flags.DEFINE_string('video', 'content/highway.mp4', 'Path to input video')
-flags.DEFINE_string('output', 'content/output.mp4', 'path to output video')
-flags.DEFINE_float('conf', 0.50, 'confidence threshold')
-flags.DEFINE_integer('blur_id', None, 'class ID to apply Gaussian Blur')
-flags.DEFINE_integer('class_id', None, 'class ID to track')
 
-flags.DEFINE_boolean('click', False, 'Use mouse')
+
+def parse_args():
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--video",
+        type=str,
+        nargs="?",
+        default="content/highway.mp4",
+        help="Path to input video"
+    )
+    parser.add_argument(
+        "--output",
+        type=str,
+        nargs="?",
+        help="path to output video",
+        default="content/output.mp4"
+    )
+    parser.add_argument(
+        "--conf",
+        type=float,
+        default=0.50,
+        help="confidence threshold",
+    )
+    parser.add_argument(
+        "--blur_id",
+        type=int,
+        default=None,
+        help="class ID to apply Gaussian Blur",
+    )
+    parser.add_argument(
+        "--class_id",
+        type=int,
+        default=None,
+        help="class ID to track",
+    )
+    parser.add_argument(
+        "--click",
+        type=bool,
+        default=False,
+        help="Use mouse to define polygone",
+    )
+    opt = parser.parse_args()
+    return opt
+
 
 
 def draw_corner_rect(img, bbox, line_length=30, line_thickness=5, rect_thickness=1,
@@ -124,7 +160,7 @@ def main(_argv):
 
 
     # Initialize the video capture
-    video_input = FLAGS.video
+    video_input = opt.video
 
     cap = cv2.VideoCapture(video_input)
     if not cap.isOpened():
@@ -138,7 +174,7 @@ def main(_argv):
     fps = int(cap.get(cv2.CAP_PROP_FPS))
 
 
-    if FLAGS.click:
+    if opt.click:
 
         
         frame = next(frame_generator)
@@ -160,7 +196,7 @@ def main(_argv):
     cv2.fillPoly(polygon_mask, [pts], 255)
     # video writer objects
     fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-    writer = cv2.VideoWriter(FLAGS.output, fourcc, fps, (frame_width, frame_height))
+    writer = cv2.VideoWriter(opt.output, fourcc, fps, (frame_width, frame_height))
 
     # Initialize the DeepSort tracker
     tracker = DeepSort(max_age=50)
@@ -191,41 +227,33 @@ def main(_argv):
         except StopIteration:
             break
         # Run model on each frame
-        results = model(frame)
+        with torch.no_grad():
+            results = model(frame)
         detect = []
         for det in results.pred[0]:
             label, confidence, bbox = det[5], det[4], det[:4]
             x1, y1, x2, y2 = map(int, bbox)
             class_id = int(label)
-
             # Filter out weak detections by confidence threshold and class_id
-            if FLAGS.class_id is None:
-                if confidence < FLAGS.conf:
+            if opt.class_id is None:
+                if confidence < opt.conf:
                     continue
             else:
-                if class_id != FLAGS.class_id or confidence < FLAGS.conf:
+                if class_id != opt.class_id or confidence < opt.conf:
                     continue
-
-            
+                
             if polygon_mask[(y1 + y2) // 2, (x1 + x2) // 2] == 255:
                 detect.append([[x1, y1, x2 - x1, y2 - y1], confidence, int(label)])            
-
         tracks = tracker.update_tracks(detect, frame=frame)
-
         for track in tracks:
             if not track.is_confirmed():
                 continue
-
             track_id = track.track_id    
             ltrb = track.to_ltrb()
             class_id = track.get_det_class()
             x1, y1, x2, y2 = map(int, ltrb)
-
-
             if polygon_mask[(y1+y2)//2,(x1+x2)//2] == 0:
                 tracks.remove(track)
-
-
             color = colors[class_id]
             B, G, R = map(int, color)
             text = f"{track_id} - {class_names[class_id]}"
@@ -234,20 +262,14 @@ def main(_argv):
             if track_id in prev_positions:
                 prev_position = prev_positions[track_id]
                 distance = calculate_distance(prev_position, transformed_pt[0][0])
-
                 speed = calculate_speed(distance, fps)
                 if track_id in speed_accumulator:
                     speed_accumulator[track_id].append(speed)
                     if len(speed_accumulator[track_id]) > 100:
                         speed_accumulator[track_id].pop(0)
-
-
                 else:
                     speed_accumulator[track_id] = []
                     speed_accumulator[track_id].append(speed)
-
-
-
             prev_positions[track_id] = transformed_pt[0][0]
             # Draw bounding box and text
             frame = draw_corner_rect(frame, (x1, y1, x2 - x1, y2 - y1), line_length=15, line_thickness=3, rect_thickness=1, rect_color=(B, G, R), line_color=(R, G, B))
@@ -259,10 +281,8 @@ def main(_argv):
                 #print(avg_speed)
                 cv2.rectangle(frame, (x1 - 1, y1-40 ), (x1 + len(f"Speed: {avg_speed:.0f} km/h") * 10, y1-20), (0, 0, 255), -1)
                 cv2.putText(frame, f"Speed: {avg_speed:.0f} km/h", (x1, y1 - 25), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 2)
-
             # Apply Gaussian Blur
-
-            if FLAGS.blur_id is not None and class_id == FLAGS.blur_id:
+            if opt.blur_id is not None and class_id == opt.blur_id:
                 print("true")
                 if 0 <= x1 < x2 <= frame.shape[1] and 0 <= y1 < y2 <= frame.shape[0]:
                     frame[y1:y2, x1:x2] = cv2.GaussianBlur(frame[y1:y2, x1:x2], (99, 99), 3)
@@ -281,16 +301,11 @@ def main(_argv):
         if cv2.waitKey(1) & 0xFF == ord('q'):
             break
 
-    # Release video capture and writer
     cap.release()
     writer.release()
     cv2.destroyAllWindows()
 
 
-     
-
-if __name__ == '__main__':
-  try:
-      app.run(main)
-  except SystemExit:
-      pass
+if __name__ == "__main__":
+    opt = parse_args()
+    main(opt)
