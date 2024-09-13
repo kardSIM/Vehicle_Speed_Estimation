@@ -4,12 +4,7 @@ import numpy as np
 import argparse, os
 from deep_sort_realtime.deepsort_tracker import DeepSort
 import time
-
-import sys
-from pathlib import Path
-sys.path.insert(0, str(Path(__file__).resolve().parent / "yolov9"))
-from yolov9.models.common import DetectMultiBackend, AutoShape
-
+from ultralytics import YOLO
 
 
 def parse_args():
@@ -45,12 +40,6 @@ def parse_args():
         type=int,
         default=None,
         help="class ID to track",
-    )
-    parser.add_argument(
-        "--click",
-        type=bool,
-        default=False,
-        help="Use mouse to define polygone",
     )
     opt = parser.parse_args()
     return opt
@@ -98,56 +87,6 @@ def read_frames(cap):
             break
         yield frame 
 
-def get_clicked_points(frame, num_points=4):
-    img = frame.copy()
-    cv2.namedWindow("image")
-    cv2.imshow("image", img)
-
-    clicked_points = []
-    keep_looping = True
-
-    def mouse_callback(event, x, y, flags, param):
-        nonlocal clicked_points, keep_looping, img
-
-        if event == cv2.EVENT_LBUTTONDOWN:
-            if len(clicked_points) == num_points:
-                clicked_points = []  # Reset if already captured 4 points
-            clicked_points.append([x, y])
-            cv2.circle(img, (x, y), 10, (0, 0, 255), -1)
-            cv2.imshow("image", img)         
-
-            if len(clicked_points) == num_points:
-                keep_looping = False
-
-    cv2.setMouseCallback("image", mouse_callback)
-
-    while keep_looping:
-        cv2.waitKey(1)
-
-    cv2.destroyAllWindows()
-
-    return clicked_points, img if len(clicked_points) == num_points else None
-
-
-def get_height_width_input(frame):
-    img = frame.copy()
-
-    while True:
-        height = input("Enter the height: ")
-        width = input("Enter the width: ")
-
-        try:
-            height = int(height)
-            width = int(width)
-            break
-        except ValueError:
-            print("Invalid input. Please enter integers for height and width.")
-
-
-    return height, width
-
-
-
 
 def main(_argv):
     FRAME_WIDTH=30
@@ -173,22 +112,6 @@ def main(_argv):
     frame_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     fps = int(cap.get(cv2.CAP_PROP_FPS))
 
-
-    if opt.click:
-
-        
-        frame = next(frame_generator)
-        selected_points=[]
-        selected_points, img = get_clicked_points(frame)
- 
-        SOURCE_POLYGONE=np.array([], dtype=np.float32)
-
-        SOURCE_POLYGONE=np.array([selected_points], dtype=np.float32)
-        x, y= get_height_width_input(img)
-        FRAME_HEIGHT,FRAME_WIDTH=x, y
-        BIRD_EYE_VIEW = np.array([[0, 0], [FRAME_WIDTH, 0], [FRAME_WIDTH, FRAME_HEIGHT],[0, FRAME_HEIGHT]], dtype=np.float32)
-        M = cv2.getPerspectiveTransform(SOURCE_POLYGONE, BIRD_EYE_VIEW)
-
     pts = SOURCE_POLYGONE.astype(np.int32) 
     pts = pts.reshape((-1, 1, 2))
 
@@ -200,19 +123,13 @@ def main(_argv):
 
     # Initialize the DeepSort tracker
     tracker = DeepSort(max_age=50)
-    # select device (CPU or GPU)
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-
     # Load YOLO model
-    model = DetectMultiBackend(weights='weights/yolov9-e.pt',device=device, fuse=True)
-    model = AutoShape(model)
-
+    model = YOLO("yolov10n.pt")
     # Load the COCO class labels
     classes_path = "configs/coco.names"
     with open(classes_path, "r") as f:
         class_names = f.read().strip().split("\n")
 
-    # Create a list of random colors to represent each class
     np.random.seed(42)
     colors = np.random.randint(0, 255, size=(len(class_names), 3)) 
     # FPS calculation variables
@@ -230,20 +147,22 @@ def main(_argv):
         with torch.no_grad():
             results = model(frame)
         detect = []
-        for det in results.pred[0]:
-            label, confidence, bbox = det[5], det[4], det[:4]
-            x1, y1, x2, y2 = map(int, bbox)
-            class_id = int(label)
-            # Filter out weak detections by confidence threshold and class_id
-            if opt.class_id is None:
-                if confidence < opt.conf:
-                    continue
-            else:
-                if class_id != opt.class_id or confidence < opt.conf:
-                    continue
-                
-            if polygon_mask[(y1 + y2) // 2, (x1 + x2) // 2] == 255:
-                detect.append([[x1, y1, x2 - x1, y2 - y1], confidence, int(label)])            
+        for pred in results:
+            for box in pred.boxes:    
+                x1, y1, x2, y2 = map(int, box.xyxy[0] )
+                confidence = box.conf[0]     
+                label = box.cls[0]  
+
+                # Filter out weak detections by confidence threshold and class_id
+                if opt.class_id is None:
+                    if confidence < opt.conf:
+                        continue
+                else:
+                    if class_id != opt.class_id or confidence < opt.conf:
+                        continue            
+                    
+                if polygon_mask[(y1 + y2) // 2, (x1 + x2) // 2] == 255:
+                    detect.append([[x1, y1, x2 - x1, y2 - y1], confidence, int(label)])            
         tracks = tracker.update_tracks(detect, frame=frame)
         for track in tracks:
             if not track.is_confirmed():

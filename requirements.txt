@@ -3,3 +3,4 @@ utils
 imutils
 Pillow
 deep-sort-realtime
+ultralytics

@@ -11,3 +11,4 @@ dependencies:
     - imutils
     - Pillow
     - deep-sort-realtime
+    - ultralytics
